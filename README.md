@@ -1,2 +1,2 @@
-# Applied_Stats_Project1
-Applied Statistics Project 1
+# DS6372_Project1
+Project 1

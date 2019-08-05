@@ -1,0 +1,523 @@
+---
+title: "DS 6372: Applied Statistics - Project 1"
+authors: 
+- Zackary Gill <zgill@mail.smu.edu>
+- Limin Zheng <lzheng@mail.smu.edu>
+- Tej Tenmattam <ttenmattam@smu.edu>
+date: "1/30/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## House Prices: Advanced Regression Techniques
+###Executive Summary:
+Kaggle describes this competition as [follows](https://www.kaggle.com/c/house-prices-advanced-regression-techniques):
+With 79 explanatory variables describing (almost) every aspect of residential homes in Ames, Iowa, this competition challenges you to predict the final price of each home.
+In this project, we have worked on some detailed EDA and many different modeling techniques to identify an algorithm that performs better with a low cross validation RMSE-score.
+
+#### 1. Load and clean the Train Data: 
+```{r}
+#Read in the data---------------------------------
+df.orig <- read.csv("data/AMES_train.csv", stringsAsFactors=FALSE)
+#Check number of NA's
+missing <- colSums(is.na(df.orig))
+missing
+
+#CLEAN THE DATA-----------------------------------
+#df.clean is where we store the cleaned data
+df.clean <- df.orig
+
+#The actual cleaning of the data that has NA's
+df.clean$LotFrontage[is.na(df.clean$LotFrontage)] <- 1  #1 in case we take the log
+df.clean$Alley[is.na(df.clean$Alley)] <- "NoAlley"
+df.clean$MasVnrType[is.na(df.clean$MasVnrType)] <- "None"
+df.clean$MasVnrArea[is.na(df.clean$MasVnrArea)] <- 0
+df.clean$BsmtQual[is.na(df.clean$BsmtQual)] <- "NoBsmt"
+df.clean$BsmtCond[is.na(df.clean$BsmtCond)] <- "NoBsmt"
+df.clean$BsmtExposure[is.na(df.clean$BsmtExposure)] <- "NoBsmt"
+df.clean$BsmtFinType1[is.na(df.clean$BsmtFinType1)] <- "NoBsmt"
+df.clean$BsmtFinType2[is.na(df.clean$BsmtFinType2)] <- "NoBsmt"
+df.clean$Electrical[is.na(df.clean$Electrical)] <- "Unknown"
+df.clean$FireplaceQu[is.na(df.clean$FireplaceQu)] <- "NoFireplace"
+df.clean$GarageType[is.na(df.clean$GarageType)] <- "NoGarage"
+#Sets NA's ty the average between the two dates: YearBuilt, YearRemodAdd
+df.clean$GarageYrBlt <- ifelse( is.na(df.clean$GarageYrBlt), 
+  round((df.clean$YearBuilt + df.clean$YearRemodAdd)/2),
+  df.clean$GarageYrBlt )
+df.clean$GarageFinish[is.na(df.clean$GarageFinish)] <- "NoGarage"
+df.clean$GarageQual[is.na(df.clean$GarageQual)] <- "NoGarage"
+df.clean$GarageCond[is.na(df.clean$GarageCond)] <- "NoGarage"
+df.clean$PoolQC[is.na(df.clean$PoolQC)] <- "NoPool"
+df.clean$Fence[is.na(df.clean$Fence)] <- "NoFence"
+df.clean$MiscFeature[is.na(df.clean$MiscFeature)] <- "None"
+
+#Print out number of NA's per row to ensure no NA's
+colSums(is.na(df.clean))
+
+#Set all charcter columns to factors
+charindexes <- sapply(df.clean, is.character)
+df.clean[charindexes] <- lapply(df.clean[charindexes], factor)
+
+#Remove Utilities because it is a Factor with 2 levels, and one level
+#only has 1 entry (the other 1459 are the other entry)
+df.clean$Utilities <- NULL
+
+#Remove ID because its literally just the ID
+df.clean$Id <- NULL
+
+#50% of the total number of rows
+length(df.orig$Id)/2
+
+#Column names with 50% or more data missing:
+#Alley, PoolQC, Fence, MiscFeature
+#Remove those columns?... I did
+df.clean$Alley <- NULL
+df.clean$PoolQC <- NULL
+df.clean$Fence <- NULL
+df.clean$MiscFeature <- NULL
+
+#Number of bathrooms in general are more important than their location
+#plus the number.
+df.clean$AllHalfBaths <- df.clean$BsmtHalfBath + df.clean$HalfBath
+df.clean$AllFullBath <- df.clean$BsmtFullBath + df.clean$FullBath
+df.clean$HalfBath <- NULL
+df.clean$FullBath <- NULL
+df.clean$BsmtFullBath <- NULL
+df.clean$BsmtHalfBath <- NULL
+
+#The total square footage of the house is better than SQ/FT of parts
+df.clean$TotalSqFeet <- df.clean$GrLivArea + df.clean$TotalBsmtSF
+df.clean$GrLivArea <- NULL
+df.clean$TotalBsmtSF <- NULL
+
+```
+
+```{r echo=FALSE, include=FALSE}
+#Finds rows [A,B,123], [B,A,123] and removes them (duplicates)
+rmCorDup <- function(res)
+{
+  rmrow <- numeric()
+  len <- length(res$Var1)
+  for( i in c(1:(len-1)) )
+  {
+    num <- i+1
+    for(j in c(num:len))
+    {
+      if( (res[i,1] == res[j,2]) & (res[i,2] == res[j,1]) )
+      {
+        rmrow <- c(rmrow, j)
+      }
+    }
+  }
+  res <- res[-rmrow,]
+  res
+}
+```
+
+#### 2. EDA - Identify the important numeric predictors: 
+##### 2a. Transformation of data: 
+```{r}
+#Gets only the numeric values for the scatterplots
+df.clean.numeric <- df.clean[, sapply(df.clean, is.numeric)]
+
+#Transformations-----------------------------------------------------
+#In plots tab Export-Image, Save as a png: 2048x2048, If you don't it is way too small to see
+#pairs(df.clean.numeric[c(37, 1:36)], gap = 0)#, pch=".")
+
+#Based on the pairs plot SalePrice should have a log transformation
+df.clean.numeric$L_SalePrice <- log(df.clean.numeric$SalePrice)
+df.clean$L_SalePrice <- log(df.clean$SalePrice)
+#Plot again (commented out again because long run time)
+#pairs(df.clean.numeric[c(38, 1:36)], gap = 0)#, pch=".")
+#End Transforming----------------------------------------------------
+```
+
+##### 2b. Correlation Removal: 
+```{r}
+#Correlation list and plotting--------------------------------------- 
+library(corrplot)
+#Correlations of all numeric variables
+#NOTE: -c(31) removes the unlogged SalePrice
+df.clean.allcor <- cor(df.clean.numeric[,-c(31)], use="pairwise.complete.obs")
+#The cutoff point for correlation, currently randomly assigned
+corr_amt <- 0.7
+#Gets a list of all correlations with higher than 'corr_amt' of correlation
+df.clean.highcor <- rmCorDup(subset(as.data.frame(as.table(df.clean.allcor)), (abs(Freq) > corr_amt) & (abs(Freq) < 1)))
+df.clean.highcor
+#Vector of the names of the columns with high correlation
+df.clean.highcor.names <- unique( c(as.vector(df.clean.highcor$Var1), as.vector(df.clean.highcor$Var2)) )
+
+#Creates a matrix of high correlation for the graphic
+df.clean.highcor.matrix <- df.clean.allcor[df.clean.highcor.names, df.clean.highcor.names]
+#Creates the high correlation graphic
+corrplot.mixed(df.clean.highcor.matrix, tl.col="black", tl.pos = "lt")
+
+#Remove columns with ultra high correlation----------------------------
+#The NA's in GarageYrBlt were a combo of YearBuilt and YearRemodAdd
+#GarageYrBlt (0.83) YearBuilt 
+df.clean$GarageYrBlt <- NULL
+df.clean.numeric$GarageYrBlt <- NULL
+
+#Both of these are indicating nearly the same thing
+#GarageCars is more commonly used than GarageArea
+#GarageArea (0.88) GarageCars
+df.clean$GarageArea <- NULL
+df.clean.numeric$GarageArea <- NULL
+
+#More space generally = more rooms
+#GrLivArea (0.825) TotRmsAbvGrd
+df.clean$TotRmsAbvGrd <- NULL
+df.clean.numeric$TotRmsAbvGrd <- NULL
+```
+
+##### 2c. Make correlation plots again: 
+```{r}
+#MAKE CORRELATION PLOTS AGAIN WITH LOWER CORRELATION-------------------
+#NOTE: -c(30) removes the unlogged SalePrice
+df.clean.allcor <- cor(df.clean.numeric[,-c(28)], use="pairwise.complete.obs")
+#The cutoff point for correlation, currently randomly assigned
+corr_amt <- 0.6
+#Gets a list of all correlations with higher than 'corr_amt' of correlation
+df.clean.highcor <- rmCorDup(subset(as.data.frame(as.table(df.clean.allcor)), (abs(Freq) > corr_amt) & (abs(Freq) < 1)))
+df.clean.highcor
+#Vector of the names of the columns with high correlation
+df.clean.highcor.names <- unique( c(as.vector(df.clean.highcor$Var1), as.vector(df.clean.highcor$Var2)) )
+
+#Creates a matrix of high correlation for the graphic
+df.clean.highcor.matrix <- df.clean.allcor[df.clean.highcor.names, df.clean.highcor.names]
+#Creates the high correlation graphic
+corrplot.mixed(df.clean.highcor.matrix, tl.col="black", tl.pos = "lt")
+
+#All pairs after removal of all heavily correlated ones
+#pairs(df.clean.numeric[,c(length(df.clean.numeric), 1:(length(df.clean.numeric)-2))], gap = 0)#, pch=".")
+```
+
+```{r echo=FALSE, include = FALSE}
+#Function to print out the plots for the multiple linear regression
+mlrplots <- function(fit, hidenum = TRUE)
+{
+  #library(MASS)
+  sres <- rstudent(fit)
+  res <- resid(fit)
+  leverage <- hatvalues(fit)
+  
+  par(mfrow=c(2,3))
+  
+  #Plot residuals
+  plot(fitted(fit), res, xlab = "Fitted", ylab = "Residuals")
+  abline(h=0, col="blue", lty=2)  
+
+  #Plot studentized residuals
+  plot(fitted(fit), sres, xlab = "Fitted", ylab = "StudResiduals")
+  abline(h=-2, col="blue", lty=2)
+  abline(h=2, col="blue", lty=2)
+  if(!hidenum)
+    text(sres~fitted(fit), y=sres, labels=ifelse( abs(sres) >= 2, names(sres),""), col="red")  
+
+  #Plot Leverage - examine any observations ~2-3 times greater than the average hat value
+  plot(x = leverage, y = sres, xlab = "Leverage", ylab = "StudResiduals")
+  abline(h=-2, col="blue", lty=2)
+  abline(h=2, col="blue", lty=2)
+  abline(v = mean(leverage)*2, col="blue", lty=2) #line is at 2x mean
+  
+  #QQ Plot
+  qqnorm(sres, xlab="Quantile", ylab="Residual", main = NULL) 
+  qqline(sres, col = 2, lwd = 2, lty = 2) 
+  
+  #Cooks D
+  cooksd <- cooks.distance(fit)
+  sample_size <- length(fit$model[,1])
+  plot(cooksd, xlab = "Observation", ylab = "Cooks D", col = c("blue"))
+  abline(h = 4/sample_size, col="red")  # add cutoff line
+  if(!hidenum)
+    text(x=1:length(cooksd)+1, y=cooksd, labels=ifelse(cooksd>4/sample_size, names(cooksd),""), col="red")  # add labels
+  
+  #Histogram of residuals with normal curve
+  #If the curve looks wrong try using the studentized residuals
+  hist(res, freq=FALSE, xlab = "Residuals", main = NULL)
+  curve(dnorm(x, mean=mean(res), sd=sd(res)), add=TRUE, col = "blue")
+}
+```
+
+```{r echo=FALSE, include=FALSE}
+#Makes the VIF plot for the LM models 
+makevif <- function(df, yresp)
+{
+  library(mctest)
+  imcdiag(x = as.matrix(df[, sapply(df, is.numeric)]), y=yresp, method="VIF")
+}
+```
+
+```{r echo=FALSE, include=FALSE}
+#Adjusted r-squared
+adjr <- function(rval, n, p)
+{
+  rr <- 1-(1-rval*rval)*((n-1)/(n-p-1))
+  rr
+}
+```
+
+### Creates the test and training sets
+```{r}
+library(MASS)
+library(Metrics) # RMSE
+library(glmnet)  # Package to fit ridge/lasso/elastic net models
+
+set.seed(123)
+df.clean.smp_size <- floor(0.5 * nrow(df.clean))
+df.clean.train_ind <- sample(seq_len(nrow(df.clean)), size = df.clean.smp_size)
+df.clean.train <- df.clean[df.clean.train_ind, ]
+df.clean.test <- df.clean[-df.clean.train_ind, ]
+```
+
+### Stepwise
+```{r}
+#Stepwise------------------------------------------
+#Fit for Stepwise
+#REMOVED HeatingQC, Exterior1st, Functional, Heating, Electrical because they didn't have enough of each level
+# + X1stFlrSF + X2ndFlrSF, and TotalSqFeet are similar so the first two were removed
+df.clean.train.fit <- lm(L_SalePrice ~ MSSubClass + MSZoning + LotFrontage + LotArea + Street + LotShape + LandContour + LotConfig + LandSlope + Neighborhood + Condition1 + Condition2 + BldgType + HouseStyle + OverallQual + OverallCond + YearBuilt + YearRemodAdd + RoofStyle + RoofMatl + Exterior2nd + MasVnrType + MasVnrArea + ExterQual + ExterCond + Foundation + BsmtCond + BsmtExposure + BsmtFinType1 + BsmtFinSF1 + BsmtFinType2 + BsmtFinSF2 + BsmtUnfSF + CentralAir + LowQualFinSF + AllFullBath + AllHalfBaths + BedroomAbvGr + KitchenAbvGr + KitchenQual + Fireplaces + FireplaceQu + GarageType + GarageFinish + GarageCars + GarageQual + PavedDrive + WoodDeckSF + OpenPorchSF + EnclosedPorch + X3SsnPorch + ScreenPorch + PoolArea + MiscVal + MoSold + YrSold + SaleType + SaleCondition + TotalSqFeet + TotalSqFeet*GarageCars, data = df.clean.train)
+#[!(row.names(df.clean.train) %in% c("633", "94", "534", "689", "589")),]
+# + BsmtQual + GarageCond
+
+#Stepwise call
+df.clean.train.step <- stepAIC(df.clean.train.fit, direction="both", trace=FALSE)
+#Summary of stepwise with p-values
+summary(df.clean.train.step)
+#The VIF's for the data (only numeric), the -c(1) removes the y component (L_SalePrice)
+df.clean.train.step.vif <- makevif(df.clean.train.step$model[,-c(1)], df.clean.train.step$model$L_SalePrice)
+df.clean.train.step.vif
+#Overall AIC for the model
+df.clean.train.step.aic <- df.clean.train.step$anova$AIC[ length(df.clean.train.step$anova$AIC) ] 
+#Plots for the model
+mlrplots(df.clean.train.step)
+
+for(i in c(2:length(df.clean.train.step$model) ) )
+{
+  plot(df.clean.train.step$model[,i], df.clean.train.step$residuals, xlab = names(df.clean.train.step$model)[i])
+}
+
+#Prediction
+df.clean.pred.step <- predict(df.clean.train.step, df.clean.test, type="response")
+#RMSE
+rmse(df.clean.test$SalePrice, exp(df.clean.pred.step))
+#Adjusted r squared on test
+adjr(cor(df.clean.test$SalePrice, exp(df.clean.pred.step)), length(df.clean.train$L_SalePrice), length(names(df.clean.train.step$model)))
+#Plot of the predicted vs actual
+plot(exp(df.clean.pred.step), df.clean.test$SalePrice)
+```
+
+### Custom Model
+```{r}
+#Custom Model----------------------------------------------------------
+#df.clean.train.cust <- lm(L_SalePrice ~ LotArea + Neighborhood + OverallQual + OverallCond + YearBuilt + GrLivArea + GarageCars + YearRemodAdd + BsmtFinSF1, data = df.clean.train) #to remove a row: df.clean.train[row.names(df.clean.train) != "1299",]
+df.clean.train.cust <- lm(L_SalePrice ~ OverallQual + TotalSqFeet + GarageCars + AllFullBath + Neighborhood + OverallCond, data = df.clean.train)
+summary(df.clean.train.cust)
+#The VIF's for the data (only numeric), the -c(1) removes the y component (L_SalePrice)
+df.clean.train.cust.vif <- makevif(df.clean.train.cust$model[,-c(1)], df.clean.test$L_SalePrice)
+df.clean.train.cust.vif
+#Plots for the model
+mlrplots(df.clean.train.cust)
+
+#pairs(df.clean.train[-c(1299, 890, 327),c(73, 4, 10, 15, 16, 17, 32, 44, 57, 18)])
+
+for(i in c(2:length(df.clean.train.cust$model) ) )
+{
+  plot(df.clean.train.cust$model[,i], df.clean.train.cust$residuals, xlab = names(df.clean.train.cust$model)[i])
+}
+#  plot(df.clean.train.cust$residuals, df.clean.train.cust$model$AllFullBath)
+
+#Predicted Values
+df.clean.pred.cust <- predict(df.clean.train.cust, df.clean.test, type="response")
+#RMSE
+rmse(df.clean.test$SalePrice, exp(df.clean.pred.cust))
+#Adjusted r squared on test
+adjr(cor(df.clean.test$SalePrice, exp(df.clean.pred.cust)), length(df.clean.train$L_SalePrice), length(names(df.clean.train.cust$model)))
+#Plot of the predicted vs actual
+plot(exp(df.clean.pred.cust), df.clean.test$SalePrice)
+```
+
+### LASSO Model
+```{r}
+library(glmnet)
+
+df.clean.numeric <- df.clean[, sapply(df.clean, is.numeric)]
+df.clean.factors <- df.clean[, !(names(df.clean) %in% names(df.clean.numeric))]
+
+DFdummies <- as.data.frame(model.matrix(~.-1, df.clean.factors))
+dim(DFdummies)
+
+#Also taking out variables with less than 10 'ones' in the train set.
+fewOnes <- which(colSums(DFdummies[1:nrow(df.clean),]) < 10)
+#Removing predictors with < 10
+DFdummies <- DFdummies[,-fewOnes]
+#combining all (now numeric) predictors into one dataframe 
+df.clean.combined <- cbind(df.clean.numeric, DFdummies)
+
+set.seed(123)
+df.clean.smp_size <- floor(0.5 * nrow(df.clean.combined))
+df.clean.train_ind <- sample(seq_len(nrow(df.clean)), size = df.clean.smp_size)
+df.clean.combined.train <- df.clean.combined[df.clean.train_ind, ]
+df.clean.combined.test <- df.clean.combined[-df.clean.train_ind, ]
+
+#------------------------------------------------------------------------------
+
+#Formatting data for GLM net
+x = model.matrix(df.clean.combined.train$L_SalePrice ~ ., data = df.clean.combined.train[, -which(names(df.clean.combined.train) %in% c("SalePrice","L_SalePrice"))])
+y = df.clean.combined.train$L_SalePrice
+
+xtest = model.matrix(df.clean.combined.test$L_SalePrice ~ ., data = df.clean.combined.test[, -which(names(df.clean.combined.test) %in% c("SalePrice","L_SalePrice"))])
+ytest <- df.clean.combined.test$L_SalePrice
+
+#creating a huge range for the penalty parameter
+grid=10^seq(10,-2, length =100)
+
+lasso.mod=glmnet(x,y,alpha=1, lambda=grid)
+plot(lasso.mod)
+#We can see from the coefficient plot that depending on the choice of tuning parameter, some of the coefficients will be exactly equal to zero. Let’s perform cross validation and see the test error.
+set.seed(123)
+#alpha=1 performs LASSO
+cv.out=cv.glmnet(x,y,alpha=1) 
+plot(cv.out)
+#Optimal penalty parameter.  You can make this call visually.
+bestlambda <- cv.out$lambda.min 
+lasso.pred = predict(lasso.mod, s=bestlambda, newx=xtest)
+lasso.rmse <- sqrt(mean((lasso.pred-ytest)^2))
+lasso.rmse
+out=glmnet(x,y,alpha=1,lambda=grid)
+lasso.coef=predict(out,type="coefficients",s=bestlambda)[1:20,]
+lasso.coef
+lasso.coef[lasso.coef!=0]
+
+df.clean.train.lasso <- lm(L_SalePrice ~ MSSubClass + LotArea + OverallQual + OverallCond + YearBuilt + YearRemodAdd + X2ndFlrSF + BedroomAbvGr + KitchenAbvGr + GarageCars , data = df.clean.train)
+summary(df.clean.train.lasso)
+
+#The VIF's for the data (only numeric), the -c(1) removes the y component (L_SalePrice)
+df.clean.train.lasso.vif <- makevif(df.clean.train.lasso$model[,-c(1)], df.clean.test$L_SalePrice)
+df.clean.train.cust.vif
+#Plots for the model
+mlrplots(df.clean.train.lasso)
+
+#pairs(df.clean.train[-c(1299, 890, 327),c(73, 4, 10, 15, 16, 17, 32, 44, 57, 18)])
+
+for(i in c(2:length(df.clean.train.lasso$model) ) )
+{
+  plot(df.clean.train.lasso$model[,i], df.clean.train.lasso$residuals, xlab = names(df.clean.train.lasso$model)[i])
+}
+
+#Predicted Values
+df.clean.pred.lasso <- predict(df.clean.train.lasso, df.clean.test, type="response")
+
+#RMSE
+rmse(df.clean.test$SalePrice, exp(df.clean.pred.lasso))
+#Adjusted r squared on test
+adjr(cor(df.clean.test$SalePrice, exp(df.clean.pred.lasso)), length(df.clean.train$L_SalePrice), length(names(df.clean.train.lasso$model)))
+#Plot of the predicted vs actual
+plot(exp(df.clean.pred.lasso), df.clean.test$SalePrice)
+```
+
+###Two Way ANOVA
+
+```{r}
+mysummary<-function(x){
+  result<-c(length(x),mean(x),sd(x))
+  names(result)<-c("N","Mean","SD")
+  return(result)
+}
+sumstats<-aggregate(L_SalePrice~LandSlope*CentralAir,data=df.clean,mysummary)
+sumstats<-cbind(sumstats[,1:2],sumstats[,-(1:2)])
+sumstats
+library(ggplot2)
+ggplot(sumstats,aes(x=LandSlope,y=Mean,group=CentralAir,colour=CentralAir))+
+  ylab("L_SalePrice")+
+  geom_line()+
+  geom_point()+
+  geom_errorbar(aes(ymin=Mean-SD,ymax=Mean+SD),width=.1)
+
+```
+
+
+```{r}
+#Fit the two way ANOVA model
+model.aov<-aov(L_SalePrice~LandSlope+CentralAir+LandSlope:CentralAir,data=df.clean)
+```
+
+
+```{r , fig.width=10, fig.height=3}
+#check the residual diagnostic plots to see if there is any violation of the assumptions.
+library(gridExtra)
+library(ggplot2)
+myfits<-data.frame(fitted.values=model.aov$fitted.values,residuals=model.aov$residuals)
+
+#Residual vs Fitted
+plot1<-ggplot(myfits,aes(x=fitted.values,y=residuals))+ylab("Residuals")+
+  xlab("Predicted")+geom_point()
+
+#QQ plot of residuals  #Note the diagonal abline is only good for qqplots of normal data.
+plot2<-ggplot(myfits,aes(sample=residuals))+
+  stat_qq()+geom_abline(intercept=mean(myfits$residuals), slope = sd(myfits$residuals))
+
+#Histogram of residuals
+plot3<-ggplot(myfits, aes(x=residuals)) + 
+  geom_histogram(aes(y=..density..),binwidth=1,color="black", fill="gray")+
+  geom_density(alpha=.1, fill="red")
+
+grid.arrange(plot1, plot2,plot3, ncol=3)
+```
+
+
+```{r}
+#Examining the type-III sums of squares F table
+library(car)
+Anova(model.aov,type=3)
+```
+
+```{r}
+#Tukey adjustment for comparison of all combination of groups
+TukeyHSD(model.aov,"LandSlope:CentralAir",conf.level=.95)
+plot(TukeyHSD(model.aov,"LandSlope:CentralAir",conf.level=.95))
+```
+
+```{r}
+library(lsmeans) 
+#Define contrast.factor and mycontrast objects.
+contrast.factor<-~LandSlope*CentralAir
+mycontrast<-c("GtlY-GtlN","ModY-ModN","SevY-SevN")
+dat<-df.clean
+
+```
+
+```{r}
+#Running a loop that determines the appropriate 0's and 1's for each 
+#contrast specified above.
+library(limma)
+final.result<-c()
+for( j in 1:length(mycontrast)){
+contrast.factor.names<-gsub(" ", "", unlist(strsplit(as.character(contrast.factor),split = "*", fixed = T))[-1])
+contrast.factor.2 <- vector("list", length(contrast.factor.names))
+for (i in 1:length(contrast.factor.names)) {
+  contrast.factor.2[[i]] <- levels(dat[, contrast.factor.names[i]])
+}
+new.factor.levels <- do.call(paste, c(do.call(expand.grid, 
+                                              contrast.factor.2), sep = ""))
+temp.cont<-mycontrast[j]
+contrast2 <- list(comparison = as.vector(do.call(makeContrasts, 
+                                                list(contrasts = temp.cont, levels = new.factor.levels))))
+
+contrast.result <- summary(contrast(lsmeans(model.aov, 
+                                            contrast.factor), contrast2, by = NULL))
+
+final.result<-rbind(final.result,contrast.result)
+}
+#Cleaning up and applying bonferroni correction to the number
+#of total comparisons investigated.
+final.result$contrast<-mycontrast
+final.result$bonf<-length(mycontrast)*final.result$p.value
+final.result$bonf[final.result$bonf>1]<-1
+final.result
+
+```
+
+
